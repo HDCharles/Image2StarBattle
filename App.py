@@ -261,6 +261,7 @@ def run_detection(pil_img: Image.Image, stars: int,
         warnings.append(f"Encoding round-trip had {mismatches} mismatches.")
 
     puzzlink_url = f"https://puzz.link/p?starbattle/{N_cols}/{N_rows}/{stars}/{bstr}"
+    penpa_url    = f"https://swaroopg92.github.io/penpa-edit/?{puzzlink_url}"
     debug_img    = make_debug_image(pil_img, R, C, VW, HW)
 
     return {
@@ -268,6 +269,7 @@ def run_detection(pil_img: Image.Image, stars: int,
         "n_regions":    n_regions,
         "region_sizes": sizes,
         "puzzlink_url": puzzlink_url,
+        "penpa_url":    penpa_url,
         "debug_img":    debug_img,
         "warnings":     warnings,
         "infos":        infos,
@@ -397,8 +399,9 @@ if uploaded:
 
             st.subheader("Results")
             puzzlink = result["puzzlink_url"]
+            penpa    = result["penpa_url"]
             st.text_input("puzz.link URL", value=puzzlink, key="puzzlink")
-            st.markdown(f"[🔗 Open in Penpa-edit]({puzzlink})")
+            st.link_button("✏️ Open directly in Penpa-edit", penpa, use_container_width=True)
 
             st.divider()
             st.subheader("→ SudokuPad workflow")
