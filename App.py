@@ -261,7 +261,7 @@ def run_detection(pil_img: Image.Image, stars: int,
         warnings.append(f"Encoding round-trip had {mismatches} mismatches.")
 
     puzzlink_url = f"https://puzz.link/p?starbattle/{N_cols}/{N_rows}/{stars}/{bstr}"
-    penpa_url    = f"https://swaroopg92.github.io/penpa-edit/?{puzzlink_url}"
+    penpa_url    = f"https://swaroopg92.github.io/penpa-edit/?p={puzzlink_url}"
     debug_img    = make_debug_image(pil_img, R, C, VW, HW)
 
     return {
@@ -406,11 +406,12 @@ if uploaded:
             st.divider()
             st.subheader("→ SudokuPad workflow")
             st.markdown("""
-1. Click **Open in Penpa-edit** above — the puzzle loads with Star Battle mode
-2. Fix any misdetected walls using Penpa-edit's editor
-3. Copy the URL from your browser address bar (it updates live as you edit)
-4. Paste into [marktekfan's SudokuPad converter ↗](https://marktekfan.github.io/sudokupad-penpa-import/)
-5. Click Convert → open the result in SudokuPad
+1. Click **Open directly in Penpa-edit** below
+2. In Penpa-edit: click the **Problem** tab → click **Edge** mode → sub-mode **Normal**
+3. Fix any misdetected borders by clicking edges to toggle them
+4. Click the **Share** button in the Penpa-edit toolbar — the address bar URL updates
+5. Copy that URL → paste into [marktekfan's SudokuPad converter ↗](https://marktekfan.github.io/sudokupad-penpa-import/)
+6. Click Convert → open the SudokuPad link
 """)
             st.link_button(
                 "Open marktekfan converter →",
