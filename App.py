@@ -436,13 +436,13 @@ border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
             # ── Path 2: Needs fixing ──────────────────────────────────────────
             st.divider()
             with st.expander("🔧 Borders need fixing? — Penpa-edit correction steps"):
+                st.link_button("✏️ Open in Penpa-edit →", penpa, use_container_width=True)
                 st.markdown("""
-1. Click **Open in Penpa-edit** above
-2. Tap the **Problem** tab (top-left of the toolbar)
-3. Tap **Edge** mode → sub-mode **Normal**
-4. Tap edges to add or remove borders until the regions look right
-5. Tap **Share** in the toolbar — the address bar URL updates to a Penpa URL
-6. Copy that URL and paste it into the marktekfan converter, then click **Convert**
+1. Tap the **Problem** tab (top-left of the toolbar)
+2. Tap **Edge** mode → sub-mode **Normal**
+3. Tap edges to add or remove borders until the regions look right
+4. Tap **Share** in the toolbar — the address bar URL updates to a Penpa URL
+5. Copy that URL and paste it into the marktekfan converter, then click **Convert**
 """)
                 st.link_button(
                     "Open marktekfan converter →",
