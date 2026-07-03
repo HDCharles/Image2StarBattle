@@ -7,9 +7,14 @@ import io
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_paste_button import paste_image_button
 from collections import deque, Counter
 from PIL import Image, ImageDraw
+
+try:
+    from streamlit_paste_button import paste_image_button
+    HAS_PASTE = True
+except ImportError:
+    HAS_PASTE = False
 
 # ── Detection constants ────────────────────────────────────────────────────────
 DEFAULT_GRIDLINE_THRESHOLD = 170
@@ -17,9 +22,9 @@ DEFAULT_GRIDLINE_COVERAGE  = 0.65
 DEFAULT_BOLD_THRESHOLD     = 100
 DEFAULT_BOLD_FRAC          = 0.50
 DEFAULT_SAMPLE_INSET       = 5
-SHADED_CELL_GRAY_LOW   = 180   # pixel range counted as "gray" (not white, not black)
-SHADED_CELL_GRAY_HIGH  = 240
-SHADED_CELL_MIN_FRAC   = 0.25  # at least this fraction of cell must be gray to count as shaded
+SHADED_CELL_GRAY_LOW       = 180
+SHADED_CELL_GRAY_HIGH      = 240
+SHADED_CELL_MIN_FRAC       = 0.25
 
 
 # ── Core detection functions ───────────────────────────────────────────────────
@@ -49,10 +54,6 @@ def find_gridlines(a: np.ndarray, axis: int, threshold: int, coverage: float) ->
 
 
 def fill_missing_lines(positions: list[int]) -> tuple[list[int], int]:
-    """
-    Detect gaps that are ~2x the median spacing and insert a midpoint line.
-    Returns (filled_positions, n_inserted).
-    """
     if len(positions) < 2:
         return positions, 0
     spacings = [positions[i+1] - positions[i] for i in range(len(positions)-1)]
@@ -60,7 +61,6 @@ def fill_missing_lines(positions: list[int]) -> tuple[list[int], int]:
     filled, n_inserted = [positions[0]], 0
     for i, gap in enumerate(spacings):
         if gap > median_gap * 1.6:
-            # insert one or more intermediate lines
             n_to_insert = round(gap / median_gap) - 1
             for k in range(1, n_to_insert + 1):
                 filled.append(int(positions[i] + gap * k / (n_to_insert + 1)))
@@ -70,9 +70,6 @@ def fill_missing_lines(positions: list[int]) -> tuple[list[int], int]:
 
 
 def blank_shaded_cells(a: np.ndarray, R: list, C: list, border: int = 3) -> np.ndarray:
-    """Overwrite the INTERIOR of gray-shaded cells with white.
-    Uses fraction of gray pixels (not mean) to avoid false-positives from dashed gridlines.
-    Leaves  pixels around each cell boundary intact so wall detection still works."""
     a = a.copy()
     for r in range(len(R) - 1):
         for c in range(len(C) - 1):
@@ -81,13 +78,11 @@ def blank_shaded_cells(a: np.ndarray, R: list, C: list, border: int = 3) -> np.n
                 continue
             gray_frac = ((cell > SHADED_CELL_GRAY_LOW) & (cell < SHADED_CELL_GRAY_HIGH)).mean()
             if gray_frac >= SHADED_CELL_MIN_FRAC:
-                # blank interior only — keep border pixels so adjacent walls survive
                 a[R[r]+border:R[r+1]-border, C[c]+border:C[c+1]-border] = 255
     return a
 
 
 def blank_solid_cells(a: np.ndarray, R: list, C: list) -> np.ndarray:
-    """Overwrite solid black (void) cells with white."""
     a = a.copy()
     for r in range(len(R) - 1):
         for c in range(len(C) - 1):
@@ -218,11 +213,9 @@ def run_detection(pil_img: Image.Image, stars: int,
     warnings = []
     infos = []
 
-    # Detect gridlines
     R = find_gridlines(a, axis=0, threshold=gridline_threshold, coverage=gridline_coverage)
     C = find_gridlines(a, axis=1, threshold=gridline_threshold, coverage=gridline_coverage)
 
-    # Auto-fill missing lines caused by dashed grids
     R, r_inserted = fill_missing_lines(R)
     C, c_inserted = fill_missing_lines(C)
     if r_inserted:
@@ -235,7 +228,7 @@ def run_detection(pil_img: Image.Image, stars: int,
     if N_rows < 4 or N_cols < 4:
         return None, (
             f"Grid too small ({N_cols}×{N_rows}) — try lowering the "
-            "Gridline coverage fraction slider (dashed grids need ~0.35)."
+            "Gridline coverage fraction (dashed grids need ~0.35)."
         )
 
     if N_rows != N_cols:
@@ -244,9 +237,7 @@ def run_detection(pil_img: Image.Image, stars: int,
             "Star Battle requires NxN. Try lowering gridline coverage."
         )
 
-    # Preprocess: blank shaded + void cells
     a_clean = blank_solid_cells(blank_shaded_cells(a, R, C), R, C)
-
     VW, HW = detect_walls(a_clean, R, C, bold_threshold, bold_frac, inset)
     region, n_regions = flood_fill(N_rows, N_cols, VW, HW)
     sizes = sorted(Counter(v for row in region for v in row).values())
@@ -254,7 +245,7 @@ def run_detection(pil_img: Image.Image, stars: int,
     if n_regions != N_rows:
         warnings.append(
             f"Found {n_regions} regions but expected {N_rows}. "
-            "Check the debug overlay — try adjusting the Bold wall sensitivity slider."
+            "Check the debug overlay — try adjusting Bold wall sensitivity."
         )
 
     bstr = encode_puzzlink(N_cols, N_rows, VW, HW)
@@ -285,8 +276,8 @@ st.set_page_config(page_title="Star Battle → puzz.link", layout="wide")
 
 st.title("⭐ Star Battle → puzz.link")
 st.caption(
-    "Upload a star battle puzzle image. The app detects region boundaries and generates "
-    "a puzz.link URL you can open in Penpa-edit, then convert to SudokuPad."
+    "Upload or paste a star battle puzzle image. "
+    "The app detects region boundaries and generates a puzz.link URL."
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -296,80 +287,63 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Gridline detection")
-    st.caption(
-        "**Dashed-grid puzzles:** lower coverage to ~0.35. "
-        "The app will auto-fill any remaining missing lines."
-    )
-    gridline_threshold = st.slider(
-        "Darkness threshold", 80, 220, DEFAULT_GRIDLINE_THRESHOLD,
-        help="Pixel value below which a pixel counts as dark. Lower for very faint grids."
-    )
-    gridline_coverage = st.slider(
-        "Coverage fraction", 0.20, 0.95, DEFAULT_GRIDLINE_COVERAGE, 0.05,
-        help=(
-            "Fraction of image width/height a line must span to be detected. "
-            "Solid grids: ~0.65. Dashed grids: try 0.35–0.40."
-        )
-    )
+    st.caption("**Dashed-grid puzzles:** lower coverage to ~0.35.")
+    gridline_threshold = st.slider("Darkness threshold", 80, 220, DEFAULT_GRIDLINE_THRESHOLD,
+        help="Pixel value below which a pixel is dark.")
+    gridline_coverage = st.slider("Coverage fraction", 0.20, 0.95, DEFAULT_GRIDLINE_COVERAGE, 0.05,
+        help="Fraction of image width/height a line must span. Solid grids: ~0.65. Dashed: ~0.35.")
 
     st.divider()
     st.subheader("Wall detection")
-    bold_frac = st.slider(
-        "Bold wall sensitivity", 0.10, 0.90, DEFAULT_BOLD_FRAC, 0.05,
-        help="Fraction of a cell-edge strip that must be dark to count as a bold wall. "
-             "Lower = more walls detected."
-    )
-    inset = st.slider(
-        "Sample inset (px)", 1, 15, DEFAULT_SAMPLE_INSET,
-        help="How many pixels to inset from the cell corners when sampling a wall strip."
-    )
+    bold_frac = st.slider("Bold wall sensitivity", 0.10, 0.90, DEFAULT_BOLD_FRAC, 0.05,
+        help="Fraction of a cell-edge strip that must be dark to count as a bold wall.")
+    inset = st.slider("Sample inset (px)", 1, 15, DEFAULT_SAMPLE_INSET)
 
     st.divider()
     with st.expander("Troubleshooting guide"):
         st.markdown("""
-**"Found 1 region"**
-Gridlines not detected. Lower *Coverage fraction* to 0.35 for dashed grids.
+**"Found 1 region"** — gridlines not detected. Lower Coverage to 0.35 for dashed grids.
 
-**Wrong region count (too few)**
-Some bold walls missed. Lower *Bold wall sensitivity*.
+**Too few regions** — some bold walls missed. Lower Bold wall sensitivity.
 
-**Wrong region count (too many)**
-False walls detected. Raise *Bold wall sensitivity*.
+**Too many regions** — false walls detected. Raise Bold wall sensitivity.
 
-**Non-square grid warning**
-One axis has a missed or doubled line. Try a slightly different coverage value.
+**Non-square grid** — a line was missed or doubled. Try a slightly different coverage value.
 
-**Still stuck?**
-Use the debug overlay to see exactly which walls were detected — it's the fastest way to diagnose what's off.
+Use the debug overlay to see exactly what was detected.
 """)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-# Image input: file upload OR clipboard paste
-col_up, col_paste = st.columns([3, 1])
-with col_up:
+# Image input: file upload + optional clipboard paste
+if HAS_PASTE:
+    col_up, col_paste = st.columns([3, 1])
+    with col_up:
+        uploaded = st.file_uploader(
+            "Upload puzzle image",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            label_visibility="collapsed",
+        )
+    with col_paste:
+        st.markdown("<br>", unsafe_allow_html=True)
+        paste_result = paste_image_button(
+            "📋 Paste",
+            key="clipboard_paste",
+            background_color="#555",
+            hover_background_color="#333",
+        )
+    pil_img = paste_result.image_data if paste_result.image_data is not None else (
+        Image.open(uploaded) if uploaded else None
+    )
+else:
     uploaded = st.file_uploader(
         "Upload puzzle image",
         type=["png", "jpg", "jpeg", "webp", "bmp"],
         label_visibility="collapsed",
     )
-with col_paste:
-    st.markdown("<br>", unsafe_allow_html=True)
-    paste_result = paste_image_button(
-        "📋 Paste",
-        key="clipboard_paste",
-        background_color="#555",
-        hover_background_color="#333",
-    )
+    pil_img = Image.open(uploaded) if uploaded else None
 
-# Resolve which image source to use (paste takes priority if freshly pasted)
-pil_img = None
-if paste_result.image_data is not None:
-    pil_img = paste_result.image_data
-elif uploaded is not None:
-    pil_img = Image.open(uploaded)
-
-st.caption("💡 Upload a file, drag-and-drop, or paste a screenshot with 📋 Paste.")
+st.caption("💡 PNG/WebP screenshots work best. Drag-and-drop also works.")
 
 if pil_img is not None:
     col_in, col_out = st.columns(2)
@@ -418,8 +392,8 @@ if pil_img is not None:
             puzzlink = result["puzzlink_url"]
             penpa    = result["penpa_url"]
 
-            # ── Copy button for puzz.link ─────────────────────────────────────
-            escaped = puzzlink.replace("'", "\'")
+            # ── Copy puzz.link button ─────────────────────────────────────────
+            escaped = puzzlink.replace("'", "\\'")
             components.html(f"""
 <button onclick="navigator.clipboard.writeText('{escaped}').then(()=>{{
     this.textContent='✅ Copied!';
@@ -433,15 +407,11 @@ border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
             st.subheader("✅ Borders look correct?")
             st.markdown(
                 "Open in Penpa-edit, click **Share**, copy the address bar URL, "
-                "paste it into the marktekfan converter and click **Convert**."
+                "paste into the marktekfan converter and click **Convert**."
             )
             col_a, col_b = st.columns(2)
             with col_a:
-                st.link_button(
-                    "1. Open in Penpa-edit →",
-                    penpa,
-                    use_container_width=True,
-                )
+                st.link_button("1. Open in Penpa-edit →", penpa, use_container_width=True)
             with col_b:
                 st.link_button(
                     "2. Open marktekfan converter →",
@@ -466,6 +436,6 @@ border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
                     use_container_width=True,
                 )
 
-            # ── Raw URL (for copy-paste) ──────────────────────────────────────
+            # ── Raw URL ───────────────────────────────────────────────────────
             with st.expander("🔗 Raw puzz.link URL"):
                 st.code(puzzlink, language=None)
