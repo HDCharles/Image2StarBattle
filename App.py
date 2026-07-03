@@ -10,11 +10,9 @@ import streamlit.components.v1 as components
 from collections import deque, Counter
 from PIL import Image, ImageDraw
 
-try:
-    from streamlit_paste_button import paste_image_button
-    HAS_PASTE = True
-except ImportError:
-    HAS_PASTE = False
+import base64
+import os
+import tempfile
 
 # ── Detection constants ────────────────────────────────────────────────────────
 DEFAULT_GRIDLINE_THRESHOLD = 170
@@ -270,6 +268,93 @@ def run_detection(pil_img: Image.Image, stars: int,
     }, None
 
 
+# ── Clipboard paste component (no external dependency) ────────────────────────
+
+def _build_paste_component():
+    """
+    Creates a minimal Streamlit bidirectional component at runtime that uses the
+    browser Clipboard API to read an image and return it as base64 to Python.
+    Writes a tiny index.html to a temp dir and registers it with declare_component.
+    """
+    html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
+<style>
+  body { margin: 0; padding: 0; }
+  button {
+    width: 100%; height: 38px;
+    background: #555; color: white;
+    border: none; border-radius: 6px;
+    font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  button:hover { background: #333; }
+  button.ok    { background: #0e7c44; }
+</style>
+</head>
+<body>
+<button id="btn" onclick="doPaste()">📋 Paste image</button>
+<script>
+Streamlit.setComponentReady();
+async function doPaste() {
+  const btn = document.getElementById('btn');
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      for (const type of item.types) {
+        if (type.startsWith('image/')) {
+          const blob = await item.getType(type);
+          const reader = new FileReader();
+          reader.onload = e => {
+            const b64 = e.target.result.split(',')[1];
+            Streamlit.setComponentValue(b64);
+            btn.textContent = '✅ Pasted!';
+            btn.className = 'ok';
+            setTimeout(() => {
+              btn.textContent = '📋 Paste image';
+              btn.className = '';
+            }, 2000);
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      }
+    }
+    btn.textContent = '⚠️ No image in clipboard';
+    setTimeout(() => btn.textContent = '📋 Paste image', 2000);
+  } catch (e) {
+    btn.textContent = '⚠️ Clipboard denied';
+    setTimeout(() => btn.textContent = '📋 Paste image', 2000);
+  }
+}
+</script>
+</body>
+</html>"""
+    tmp = tempfile.mkdtemp(prefix="penpa_paste_")
+    with open(os.path.join(tmp, "index.html"), "w") as f:
+        f.write(html)
+    return components.declare_component("clipboard_paste", path=tmp)
+
+
+@st.cache_resource
+def _paste_component():
+    return _build_paste_component()
+
+
+def paste_image_input(key: str = "paste") -> Image.Image | None:
+    """Renders the paste button. Returns a PIL Image when something was pasted."""
+    comp = _paste_component()
+    b64 = comp(key=key, default=None)
+    if b64:
+        try:
+            return Image.open(io.BytesIO(base64.b64decode(b64)))
+        except Exception:
+            pass
+    return None
+
+
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Star Battle → puzz.link", layout="wide")
@@ -315,33 +400,22 @@ Use the debug overlay to see exactly what was detected.
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-# Image input: file upload + optional clipboard paste
-if HAS_PASTE:
-    col_up, col_paste = st.columns([3, 1])
-    with col_up:
-        uploaded = st.file_uploader(
-            "Upload puzzle image",
-            type=["png", "jpg", "jpeg", "webp", "bmp"],
-            label_visibility="collapsed",
-        )
-    with col_paste:
-        st.markdown("<br>", unsafe_allow_html=True)
-        paste_result = paste_image_button(
-            "📋 Paste",
-            key="clipboard_paste",
-            background_color="#555",
-            hover_background_color="#333",
-        )
-    pil_img = paste_result.image_data if paste_result.image_data is not None else (
-        Image.open(uploaded) if uploaded else None
-    )
-else:
+# Image input: file upload + clipboard paste (no external package)
+col_up, col_paste = st.columns([3, 1])
+with col_up:
     uploaded = st.file_uploader(
         "Upload puzzle image",
         type=["png", "jpg", "jpeg", "webp", "bmp"],
         label_visibility="collapsed",
     )
-    pil_img = Image.open(uploaded) if uploaded else None
+with col_paste:
+    st.markdown("<br>", unsafe_allow_html=True)
+    pasted = paste_image_input(key="clipboard_paste")
+
+# Paste takes priority over file upload
+pil_img = pasted if pasted is not None else (
+    Image.open(uploaded) if uploaded else None
+)
 
 st.caption("💡 PNG/WebP screenshots work best. Drag-and-drop also works.")
 
