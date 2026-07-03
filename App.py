@@ -425,18 +425,13 @@ border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
             # ── Path 1: Looks good ────────────────────────────────────────────
             st.subheader("✅ Borders look correct?")
             st.markdown(
-                "Open in Penpa-edit, click **Share**, copy the address bar URL, "
-                "paste into the marktekfan converter and click **Convert**."
+                "Copy the puzz.link URL above, paste it into the marktekfan converter, and click **Convert**."
             )
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.link_button("1. Open in Penpa-edit →", penpa, use_container_width=True)
-            with col_b:
-                st.link_button(
-                    "2. Open marktekfan converter →",
-                    "https://marktekfan.github.io/sudokupad-penpa-import/",
-                    use_container_width=True,
-                )
+            st.link_button(
+                "Open marktekfan converter →",
+                "https://marktekfan.github.io/sudokupad-penpa-import/",
+                use_container_width=True,
+            )
 
             # ── Path 2: Needs fixing ──────────────────────────────────────────
             st.divider()
