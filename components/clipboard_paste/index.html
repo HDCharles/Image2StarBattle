@@ -2,10 +2,8 @@
 <html>
 <head>
 <meta charset="utf-8">
-<script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: sans-serif; }
   button {
     width: 100%; height: 38px;
     background: #555; color: white;
@@ -14,15 +12,29 @@
     cursor: pointer; transition: background .15s;
   }
   button:hover { background: #333; }
-  button.ok    { background: #0e7c44; }
-  button.err   { background: #b33; }
+  button.ok  { background: #0e7c44; }
+  button.err { background: #b33; }
 </style>
 </head>
 <body>
 <button id="btn" onclick="doPaste()">📋 Paste image</button>
 <script>
-Streamlit.setComponentReady();
+// Minimal inline Streamlit component protocol — no CDN needed
+function sendMsg(type, payload) {
+  window.parent.postMessage(Object.assign({ type }, payload), '*');
+}
 
+// 1. Tell Streamlit we're ready
+sendMsg('streamlit:componentReady', { apiVersion: 1 });
+
+// 2. Set iframe height
+function setHeight() {
+  sendMsg('streamlit:setFrameHeight', { height: document.body.scrollHeight });
+}
+setHeight();
+window.addEventListener('load', setHeight);
+
+// 3. Handle paste
 async function doPaste() {
   const btn = document.getElementById('btn');
   try {
@@ -34,7 +46,8 @@ async function doPaste() {
           const reader = new FileReader();
           reader.onload = e => {
             const b64 = e.target.result.split(',')[1];
-            Streamlit.setComponentValue(b64);
+            // 4. Return value to Python
+            sendMsg('streamlit:setComponentValue', { value: b64, dataType: 'json' });
             btn.textContent = '✅ Pasted!';
             btn.className = 'ok';
             setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2000);
@@ -47,7 +60,7 @@ async function doPaste() {
     btn.textContent = '⚠️ No image in clipboard';
     btn.className = 'err';
     setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2000);
-  } catch (e) {
+  } catch(e) {
     btn.textContent = '⚠️ Clipboard access denied';
     btn.className = 'err';
     setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2500);
