@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; }
+  button {
+    width: 100%; height: 38px;
+    background: #555; color: white;
+    border: none; border-radius: 6px;
+    font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  button:hover { background: #333; }
+  button.ok    { background: #0e7c44; }
+  button.err   { background: #b33; }
+</style>
+</head>
+<body>
+<button id="btn" onclick="doPaste()">📋 Paste image</button>
+<script>
+Streamlit.setComponentReady();
+
+async function doPaste() {
+  const btn = document.getElementById('btn');
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      for (const type of item.types) {
+        if (type.startsWith('image/')) {
+          const blob = await item.getType(type);
+          const reader = new FileReader();
+          reader.onload = e => {
+            const b64 = e.target.result.split(',')[1];
+            Streamlit.setComponentValue(b64);
+            btn.textContent = '✅ Pasted!';
+            btn.className = 'ok';
+            setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2000);
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      }
+    }
+    btn.textContent = '⚠️ No image in clipboard';
+    btn.className = 'err';
+    setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2000);
+  } catch (e) {
+    btn.textContent = '⚠️ Clipboard access denied';
+    btn.className = 'err';
+    setTimeout(() => { btn.textContent = '📋 Paste image'; btn.className = ''; }, 2500);
+  }
+}
+</script>
+</body>
+</html>
