@@ -10,8 +10,7 @@ import streamlit.components.v1 as components
 from collections import deque, Counter
 from PIL import Image, ImageDraw
 
-import base64
-import os
+from streamlit_paste_button import paste_image_button
 
 # ── Detection constants ────────────────────────────────────────────────────────
 DEFAULT_GRIDLINE_THRESHOLD = 170
@@ -267,37 +266,6 @@ def run_detection(pil_img: Image.Image, stars: int,
     }, None
 
 
-# ── Clipboard paste component (no external dependency) ────────────────────────
-
-def _build_paste_component():
-    """
-    Registers the clipboard paste component from the components/ directory.
-    This directory must be committed to the repo alongside app.py.
-    """
-    component_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "components", "clipboard_paste"
-    )
-    return components.declare_component("clipboard_paste", path=component_dir)
-
-
-@st.cache_resource
-def _paste_component():
-    return _build_paste_component()
-
-
-def paste_image_input(key: str = "paste") -> Image.Image | None:
-    """Renders the paste button. Returns a PIL Image when something was pasted."""
-    comp = _paste_component()
-    b64 = comp(key=key, default=None)
-    if b64:
-        try:
-            return Image.open(io.BytesIO(base64.b64decode(b64)))
-        except Exception:
-            pass
-    return None
-
-
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Star Battle → puzz.link", layout="wide")
@@ -343,7 +311,7 @@ Use the debug overlay to see exactly what was detected.
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-# Image input: file upload + clipboard paste (no external package)
+# Image input: file upload + optional clipboard paste
 col_up, col_paste = st.columns([3, 1])
 with col_up:
     uploaded = st.file_uploader(
@@ -353,7 +321,10 @@ with col_up:
     )
 with col_paste:
     st.markdown("<br>", unsafe_allow_html=True)
-    pasted = paste_image_input(key="clipboard_paste")
+    paste_result = paste_image_button("📋 Paste", key="clipboard_paste",
+                                      background_color="#555",
+                                      hover_background_color="#333")
+    pasted = paste_result.image_data
 
 # Paste takes priority over file upload
 pil_img = pasted if pasted is not None else (
