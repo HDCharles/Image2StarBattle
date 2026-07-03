@@ -4,13 +4,18 @@ Run with: streamlit run app.py
 """
 
 import io
+import urllib.request
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 from collections import deque, Counter
 from PIL import Image, ImageDraw
 
-from streamlit_paste_button import paste_image_button
+try:
+    from streamlit_paste_button import paste_image_button
+    HAS_PASTE = True
+except Exception:
+    HAS_PASTE = False
 
 # ── Detection constants ────────────────────────────────────────────────────────
 DEFAULT_GRIDLINE_THRESHOLD = 170
@@ -311,7 +316,7 @@ Use the debug overlay to see exactly what was detected.
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-# Image input: file upload + optional clipboard paste
+# Image input: file upload, clipboard paste, or URL
 col_up, col_paste = st.columns([3, 1])
 with col_up:
     uploaded = st.file_uploader(
@@ -321,15 +326,41 @@ with col_up:
     )
 with col_paste:
     st.markdown("<br>", unsafe_allow_html=True)
-    paste_result = paste_image_button("📋 Paste", key="clipboard_paste",
-                                      background_color="#555",
-                                      hover_background_color="#333")
-    pasted = paste_result.image_data
+    if HAS_PASTE:
+        paste_result = paste_image_button("📋 Paste", key="clipboard_paste",
+                                          background_color="#555",
+                                          hover_background_color="#333")
+        pasted = paste_result.image_data
+    else:
+        st.caption("_(paste N/A)_")
+        pasted = None
 
-# Paste takes priority over file upload
-pil_img = pasted if pasted is not None else (
-    Image.open(uploaded) if uploaded else None
+image_url = st.text_input(
+    "Or paste an image URL",
+    placeholder="https://example.com/puzzle.png",
+    label_visibility="visible",
 )
+
+# Priority: clipboard paste > URL > file upload
+def load_from_url(url: str) -> Image.Image | None:
+    if not url.strip():
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return Image.open(io.BytesIO(resp.read()))
+    except Exception as e:
+        st.error(f"Could not load image from URL: {e}")
+        return None
+
+if pasted is not None:
+    pil_img = pasted
+elif image_url.strip():
+    pil_img = load_from_url(image_url.strip())
+elif uploaded:
+    pil_img = Image.open(uploaded)
+else:
+    pil_img = None
 
 st.caption("💡 PNG/WebP screenshots work best. Drag-and-drop also works.")
 
