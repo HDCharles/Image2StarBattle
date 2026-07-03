@@ -6,6 +6,8 @@ Run with: streamlit run app.py
 import io
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_paste_button import paste_image_button
 from collections import deque, Counter
 from PIL import Image, ImageDraw
 
@@ -342,18 +344,34 @@ Use the debug overlay to see exactly which walls were detected — it's the fast
 """)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-uploaded = st.file_uploader(
-    "Upload puzzle image",
-    type=["png", "jpg", "jpeg", "webp", "bmp"],
-    label_visibility="collapsed",
-)
-st.caption(
-    "💡 PNG/WebP screenshots work best. "
-    "Drag-and-drop or use your OS clipboard → save → upload."
-)
 
-if uploaded:
+# Image input: file upload OR clipboard paste
+col_up, col_paste = st.columns([3, 1])
+with col_up:
+    uploaded = st.file_uploader(
+        "Upload puzzle image",
+        type=["png", "jpg", "jpeg", "webp", "bmp"],
+        label_visibility="collapsed",
+    )
+with col_paste:
+    st.markdown("<br>", unsafe_allow_html=True)
+    paste_result = paste_image_button(
+        "📋 Paste",
+        key="clipboard_paste",
+        background_color="#555",
+        hover_background_color="#333",
+    )
+
+# Resolve which image source to use (paste takes priority if freshly pasted)
+pil_img = None
+if paste_result.image_data is not None:
+    pil_img = paste_result.image_data
+elif uploaded is not None:
     pil_img = Image.open(uploaded)
+
+st.caption("💡 Upload a file, drag-and-drop, or paste a screenshot with 📋 Paste.")
+
+if pil_img is not None:
     col_in, col_out = st.columns(2)
 
     with col_in:
@@ -397,24 +415,57 @@ if uploaded:
             ]
             st.info("  ·  ".join(status_parts))
 
-            st.subheader("Results")
             puzzlink = result["puzzlink_url"]
             penpa    = result["penpa_url"]
-            st.text_input("puzz.link URL", value=puzzlink, key="puzzlink")
-            st.link_button("✏️ Open directly in Penpa-edit", penpa, use_container_width=True)
 
-            st.divider()
-            st.subheader("→ SudokuPad workflow")
-            st.markdown("""
-1. Click **Open directly in Penpa-edit** below
-2. In Penpa-edit: click the **Problem** tab → click **Edge** mode → sub-mode **Normal**
-3. Fix any misdetected borders by clicking edges to toggle them
-4. Click the **Share** button in the Penpa-edit toolbar — the address bar URL updates
-5. Copy that URL → paste into [marktekfan's SudokuPad converter ↗](https://marktekfan.github.io/sudokupad-penpa-import/)
-6. Click Convert → open the SudokuPad link
-""")
-            st.link_button(
-                "Open marktekfan converter →",
-                "https://marktekfan.github.io/sudokupad-penpa-import/",
-                use_container_width=True,
+            # ── Copy button for puzz.link ─────────────────────────────────────
+            escaped = puzzlink.replace("'", "\'")
+            components.html(f"""
+<button onclick="navigator.clipboard.writeText('{escaped}').then(()=>{{
+    this.textContent='✅ Copied!';
+    setTimeout(()=>this.textContent='📋 Copy puzz.link',1500);
+}})" style="width:100%;padding:9px;background:#0e7c44;color:white;border:none;
+border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
+📋 Copy puzz.link
+</button>""", height=48)
+
+            # ── Path 1: Looks good ────────────────────────────────────────────
+            st.subheader("✅ Borders look correct?")
+            st.markdown(
+                "Open in Penpa-edit, click **Share**, copy the address bar URL, "
+                "paste it into the marktekfan converter and click **Convert**."
             )
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.link_button(
+                    "1. Open in Penpa-edit →",
+                    penpa,
+                    use_container_width=True,
+                )
+            with col_b:
+                st.link_button(
+                    "2. Open marktekfan converter →",
+                    "https://marktekfan.github.io/sudokupad-penpa-import/",
+                    use_container_width=True,
+                )
+
+            # ── Path 2: Needs fixing ──────────────────────────────────────────
+            st.divider()
+            with st.expander("🔧 Borders need fixing? — Penpa-edit correction steps"):
+                st.markdown("""
+1. Click **Open in Penpa-edit** above
+2. Tap the **Problem** tab (top-left of the toolbar)
+3. Tap **Edge** mode → sub-mode **Normal**
+4. Tap edges to add or remove borders until the regions look right
+5. Tap **Share** in the toolbar — the address bar URL updates to a Penpa URL
+6. Copy that URL and paste it into the marktekfan converter, then click **Convert**
+""")
+                st.link_button(
+                    "Open marktekfan converter →",
+                    "https://marktekfan.github.io/sudokupad-penpa-import/",
+                    use_container_width=True,
+                )
+
+            # ── Raw URL (for copy-paste) ──────────────────────────────────────
+            with st.expander("🔗 Raw puzz.link URL"):
+                st.code(puzzlink, language=None)
