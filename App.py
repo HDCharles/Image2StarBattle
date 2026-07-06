@@ -4,6 +4,7 @@ Run with: streamlit run app.py
 """
 
 import io
+import hashlib
 import urllib.request
 import numpy as np
 import streamlit as st
@@ -31,6 +32,12 @@ SHADED_CELL_MIN_FRAC       = 0.25
 # ── Core detection functions ───────────────────────────────────────────────────
 
 def pil_to_gray_array(pil_img: Image.Image) -> np.ndarray:
+    """Flatten alpha onto white, convert to grayscale numpy array."""
+    if pil_img.mode == "L":
+        return np.array(pil_img)
+    if pil_img.mode in ("RGB", "JPEG"):
+        # No alpha — skip alpha_composite (expensive)
+        return np.array(pil_img.convert("L"))
     im = pil_img.convert("RGBA")
     bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
     flat = Image.alpha_composite(bg, im).convert("L")
@@ -71,75 +78,91 @@ def fill_missing_lines(positions: list[int]) -> tuple[list[int], int]:
 
 
 def blank_shaded_cells(a: np.ndarray, R: list, C: list, border: int = 3) -> np.ndarray:
+    """Vectorized: build mask of gray pixels then check per-cell fraction."""
     a = a.copy()
+    gray_mask = ((a > SHADED_CELL_GRAY_LOW) & (a < SHADED_CELL_GRAY_HIGH)).astype(np.float32)
     for r in range(len(R) - 1):
         for c in range(len(C) - 1):
-            cell = a[R[r]+2:R[r+1]-2, C[c]+2:C[c+1]-2]
-            if cell.size == 0:
-                continue
-            gray_frac = ((cell > SHADED_CELL_GRAY_LOW) & (cell < SHADED_CELL_GRAY_HIGH)).mean()
-            if gray_frac >= SHADED_CELL_MIN_FRAC:
+            cell = gray_mask[R[r]+2:R[r+1]-2, C[c]+2:C[c+1]-2]
+            if cell.size > 0 and cell.mean() >= SHADED_CELL_MIN_FRAC:
                 a[R[r]+border:R[r+1]-border, C[c]+border:C[c+1]-border] = 255
     return a
 
 
 def blank_solid_cells(a: np.ndarray, R: list, C: list) -> np.ndarray:
+    """Vectorized: build dark-pixel mask once, then check per-cell fraction."""
     a = a.copy()
+    dark_mask = (a < 80).astype(np.float32)
     for r in range(len(R) - 1):
         for c in range(len(C) - 1):
-            cell = a[R[r]+3:R[r+1]-3, C[c]+3:C[c+1]-3]
-            if cell.size > 0 and (cell < 80).mean() > 0.35:
+            cell = dark_mask[R[r]+3:R[r+1]-3, C[c]+3:C[c+1]-3]
+            if cell.size > 0 and cell.mean() > 0.35:
                 a[R[r]:R[r+1], C[c]:C[c+1]] = 255
     return a
 
 
 def detect_walls(a: np.ndarray, R: list, C: list,
                  bold_thresh: int, bold_frac: float, inset: int):
+    """
+    Vectorized wall detection. Pre-computes the dark-pixel boolean array once,
+    then extracts full column/row strips and slices per cell — fewer indexing ops.
+    """
     N_rows, N_cols = len(R) - 1, len(C) - 1
+    dark = (a < bold_thresh)          # compute once, not per strip
     VW, HW = set(), set()
+
     for c in range(1, N_cols):
-        x = C[c]
-        for r in range(N_rows):
-            strip = a[R[r]+inset:R[r+1]-inset, x-1:x+2]
-            if strip.size > 0 and (strip < bold_thresh).mean() > bold_frac:
-                VW.add((r, c))
+        col = dark[:, C[c]-1:C[c]+2]  # full column strip (H×3) — one slice
+        fracs = np.array([col[R[r]+inset:R[r+1]-inset].mean() for r in range(N_rows)])
+        for r in np.where(fracs > bold_frac)[0]:
+            VW.add((int(r), c))
+
     for r in range(1, N_rows):
-        y = R[r]
-        for c in range(N_cols):
-            strip = a[y-1:y+2, C[c]+inset:C[c+1]-inset]
-            if strip.size > 0 and (strip < bold_thresh).mean() > bold_frac:
-                HW.add((r, c))
+        row = dark[R[r]-1:R[r]+2, :]  # full row strip (3×W) — one slice
+        fracs = np.array([row[:, C[c]+inset:C[c+1]-inset].mean() for c in range(N_cols)])
+        for c in np.where(fracs > bold_frac)[0]:
+            HW.add((r, int(c)))
+
     return VW, HW
 
 
 def detect_walls_by_color(pil_img: Image.Image, R: list, C: list,
                           color_threshold: float = 20.0) -> tuple[set, set]:
     """
-    Detect region boundaries by sampling the median color of each cell and
-    placing a wall wherever adjacent cells have a color distance > threshold.
-    Robust to X-marks and dark grid borders via inset sampling + median.
+    Vectorized color-based wall detection.
+    - Uses mean (not median) of a fixed inset patch — much faster, still robust
+      because the inset already excludes border pixels and marks are sparse.
+    - Stacks all patches into one (N_rows, N_cols, ph, pw, 3) array so the
+      mean is computed in a single numpy call.
+    - Wall detection uses np.linalg.norm on the full (N, M, 3) difference array.
     """
-    rgb = np.array(pil_img.convert("RGB"), dtype=float)
+    rgb = np.array(pil_img.convert("RGB"), dtype=np.float32)
     N_rows, N_cols = len(R) - 1, len(C) - 1
 
-    cell_colors = np.zeros((N_rows, N_cols, 3))
-    for r in range(N_rows):
-        for c in range(N_cols):
-            h = R[r+1] - R[r]; w = C[c+1] - C[c]
-            inset = max(4, int(min(h, w) * 0.20))
-            patch = rgb[R[r]+inset:R[r+1]-inset, C[c]+inset:C[c+1]-inset]
-            if patch.size > 0:
-                cell_colors[r, c] = np.median(patch.reshape(-1, 3), axis=0)
+    min_h = min(R[r+1] - R[r] for r in range(N_rows))
+    min_w = min(C[c+1] - C[c] for c in range(N_cols))
+    inset = max(4, int(min(min_h, min_w) * 0.20))
+    ph = min_h - 2 * inset
+    pw = min_w - 2 * inset
 
-    VW, HW = set(), set()
-    for r in range(N_rows):
-        for c in range(1, N_cols):
-            if np.linalg.norm(cell_colors[r, c] - cell_colors[r, c-1]) > color_threshold:
-                VW.add((r, c))
-    for r in range(1, N_rows):
-        for c in range(N_cols):
-            if np.linalg.norm(cell_colors[r, c] - cell_colors[r-1, c]) > color_threshold:
-                HW.add((r, c))
+    if ph <= 0 or pw <= 0:
+        return set(), set()
+
+    # Build (N_rows, N_cols, ph, pw, 3) — list comprehension of numpy slices
+    patches = np.array([
+        [rgb[R[r]+inset:R[r]+inset+ph, C[c]+inset:C[c]+inset+pw]
+         for c in range(N_cols)]
+        for r in range(N_rows)
+    ], dtype=np.float32)                      # shape: (N_rows, N_cols, ph, pw, 3)
+
+    cell_colors = patches.mean(axis=(2, 3))   # shape: (N_rows, N_cols, 3)
+
+    # Vectorized neighbor differences
+    h_diff = np.linalg.norm(cell_colors[:, 1:] - cell_colors[:, :-1], axis=2)
+    v_diff = np.linalg.norm(cell_colors[1:, :] - cell_colors[:-1, :], axis=2)
+
+    VW = {(int(r), int(c)+1) for r, c in zip(*np.where(h_diff > color_threshold))}
+    HW = {(int(r)+1, int(c)) for r, c in zip(*np.where(v_diff > color_threshold))}
     return VW, HW
 
 
@@ -335,12 +358,11 @@ def run_detection(pil_img: Image.Image, stars: int,
 
 # ── Cached detection (reruns only when inputs actually change) ─────────────────
 
-@st.cache_data(show_spinner=False)
-def cached_detection(img_bytes: bytes, stars: int,
+@st.cache_data(show_spinner=False, hash_funcs={Image.Image: lambda img: hashlib.md5(np.array(img).tobytes()).hexdigest()})
+def cached_detection(img_key: str, pil_img: Image.Image, stars: int,
                      gridline_threshold: int, gridline_coverage: float,
                      bold_threshold: int, bold_frac: float, inset: int,
                      mode: str, color_threshold: float):
-    pil_img = Image.open(io.BytesIO(img_bytes))
     return run_detection(pil_img, stars, gridline_threshold, gridline_coverage,
                          bold_threshold, bold_frac, inset, mode, color_threshold)
 
@@ -463,10 +485,12 @@ if pil_img is not None:
         st.subheader("Input")
         st.image(pil_img, use_container_width=True)
 
-    img_bytes = pil_to_bytes(pil_img)
+    # Fast hash for cache key — md5 of raw pixels, no PNG encoding
+    img_arr = np.array(pil_img)
+    img_key = hashlib.md5(img_arr.tobytes()).hexdigest()
     with st.spinner("Detecting…"):
         result, err = cached_detection(
-            img_bytes, stars,
+            img_key, pil_img, stars,
             gridline_threshold, gridline_coverage,
             DEFAULT_BOLD_THRESHOLD, bold_frac, inset,
             mode=det_mode, color_threshold=color_threshold,
