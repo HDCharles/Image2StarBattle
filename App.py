@@ -112,6 +112,59 @@ def detect_walls(a: np.ndarray, R: list, C: list,
     return VW, HW
 
 
+def detect_walls_by_color(pil_img: Image.Image, R: list, C: list,
+                          color_threshold: float = 20.0) -> tuple[set, set]:
+    """
+    Detect region boundaries by sampling the median color of each cell and
+    placing a wall wherever adjacent cells have a color distance > threshold.
+    Robust to X-marks and dark grid borders via inset sampling + median.
+    """
+    rgb = np.array(pil_img.convert("RGB"), dtype=float)
+    N_rows, N_cols = len(R) - 1, len(C) - 1
+
+    cell_colors = np.zeros((N_rows, N_cols, 3))
+    for r in range(N_rows):
+        for c in range(N_cols):
+            h = R[r+1] - R[r]; w = C[c+1] - C[c]
+            inset = max(4, int(min(h, w) * 0.20))
+            patch = rgb[R[r]+inset:R[r+1]-inset, C[c]+inset:C[c+1]-inset]
+            if patch.size > 0:
+                cell_colors[r, c] = np.median(patch.reshape(-1, 3), axis=0)
+
+    VW, HW = set(), set()
+    for r in range(N_rows):
+        for c in range(1, N_cols):
+            if np.linalg.norm(cell_colors[r, c] - cell_colors[r, c-1]) > color_threshold:
+                VW.add((r, c))
+    for r in range(1, N_rows):
+        for c in range(N_cols):
+            if np.linalg.norm(cell_colors[r, c] - cell_colors[r-1, c]) > color_threshold:
+                HW.add((r, c))
+    return VW, HW
+
+
+def auto_detect_mode(pil_img: Image.Image, R: list, C: list) -> str:
+    """
+    Returns 'colors' if cells have significant color saturation (colored-region puzzle),
+    otherwise 'borders' (black-and-white border-line puzzle).
+    Threshold of 0.15 cleanly separates the two types.
+    """
+    rgb = np.array(pil_img.convert("RGB"), dtype=float)
+    sats = []
+    for r in range(len(R) - 1):
+        for c in range(len(C) - 1):
+            h = R[r+1] - R[r]; w = C[c+1] - C[c]
+            inset = max(4, int(min(h, w) * 0.20))
+            patch = rgb[R[r]+inset:R[r+1]-inset, C[c]+inset:C[c+1]-inset]
+            if patch.size > 0:
+                med = np.median(patch.reshape(-1, 3), axis=0)
+                mx, mn = med.max(), med.min()
+                if mx > 0:
+                    sats.append((mx - mn) / mx)
+    avg_sat = float(np.mean(sats)) if sats else 0.0
+    return "colors" if avg_sat > 0.15 else "borders"
+
+
 def flood_fill(N_rows: int, N_cols: int, VW: set, HW: set):
     def walled(r, c, r2, c2):
         return (r, max(c, c2)) in VW if r == r2 else (max(r, r2), c) in HW
@@ -209,7 +262,8 @@ def pil_to_bytes(img: Image.Image, fmt="PNG") -> bytes:
 
 def run_detection(pil_img: Image.Image, stars: int,
                   gridline_threshold: int, gridline_coverage: float,
-                  bold_threshold: int, bold_frac: float, inset: int):
+                  bold_threshold: int, bold_frac: float, inset: int,
+                  mode: str = "borders", color_threshold: float = 20.0):
     a = pil_to_gray_array(pil_img)
     warnings = []
     infos = []
@@ -238,8 +292,16 @@ def run_detection(pil_img: Image.Image, stars: int,
             "Star Battle requires NxN. Try lowering gridline coverage."
         )
 
-    a_clean = blank_solid_cells(blank_shaded_cells(a, R, C), R, C)
-    VW, HW = detect_walls(a_clean, R, C, bold_threshold, bold_frac, inset)
+    resolved_mode = mode
+    if mode == "auto":
+        resolved_mode = auto_detect_mode(pil_img, R, C)
+        infos.append(f"Auto-detected mode: **{'Cell fill colors' if resolved_mode == 'colors' else 'Bold border lines'}**")
+
+    if resolved_mode == "colors":
+        VW, HW = detect_walls_by_color(pil_img, R, C, color_threshold)
+    else:
+        a_clean = blank_solid_cells(blank_shaded_cells(a, R, C), R, C)
+        VW, HW = detect_walls(a_clean, R, C, bold_threshold, bold_frac, inset)
     region, n_regions = flood_fill(N_rows, N_cols, VW, HW)
     sizes = sorted(Counter(v for row in region for v in row).values())
 
@@ -271,6 +333,18 @@ def run_detection(pil_img: Image.Image, stars: int,
     }, None
 
 
+# ── Cached detection (reruns only when inputs actually change) ─────────────────
+
+@st.cache_data(show_spinner=False)
+def cached_detection(img_bytes: bytes, stars: int,
+                     gridline_threshold: int, gridline_coverage: float,
+                     bold_threshold: int, bold_frac: float, inset: int,
+                     mode: str, color_threshold: float):
+    pil_img = Image.open(io.BytesIO(img_bytes))
+    return run_detection(pil_img, stars, gridline_threshold, gridline_coverage,
+                         bold_threshold, bold_frac, inset, mode, color_threshold)
+
+
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Star Battle → puzz.link", layout="wide")
@@ -295,10 +369,28 @@ with st.sidebar:
         help="Fraction of image width/height a line must span. Solid grids: ~0.65. Dashed: ~0.35.")
 
     st.divider()
-    st.subheader("Wall detection")
-    bold_frac = st.slider("Bold wall sensitivity", 0.10, 0.90, DEFAULT_BOLD_FRAC, 0.05,
-        help="Fraction of a cell-edge strip that must be dark to count as a bold wall.")
-    inset = st.slider("Sample inset (px)", 1, 15, DEFAULT_SAMPLE_INSET)
+    st.subheader("Detection mode")
+    det_mode = st.radio(
+        "Region boundaries defined by",
+        ["auto", "borders", "colors"],
+        format_func=lambda x: {
+            "auto": "🔍 Auto-detect",
+            "borders": "Bold border lines",
+            "colors": "Cell fill colors",
+        }[x],
+        help="Auto-detect works for most puzzles. Override if detection gets the wrong mode.",
+    )
+
+    if det_mode in ("auto", "borders"):
+        bold_frac = st.slider("Bold wall sensitivity", 0.10, 0.90, DEFAULT_BOLD_FRAC, 0.05,
+            help="Fraction of a cell-edge strip that must be dark to count as a bold wall.")
+        inset = st.slider("Sample inset (px)", 1, 15, DEFAULT_SAMPLE_INSET)
+        color_threshold = 20.0
+    else:
+        color_threshold = st.slider("Color difference threshold", 5, 80, 20,
+            help="How different (in RGB distance) two adjacent cells must be to be in different regions.")
+        bold_frac = DEFAULT_BOLD_FRAC
+        inset = DEFAULT_SAMPLE_INSET
 
     st.divider()
     with st.expander("Troubleshooting guide"):
@@ -370,50 +462,50 @@ if pil_img is not None:
     with col_in:
         st.subheader("Input")
         st.image(pil_img, use_container_width=True)
-        run = st.button("🔍 Detect regions", type="primary", use_container_width=True)
 
-    if run:
-        with st.spinner("Detecting grid and region walls…"):
-            result, err = run_detection(
-                pil_img, stars,
-                gridline_threshold, gridline_coverage,
-                DEFAULT_BOLD_THRESHOLD, bold_frac, inset,
+    img_bytes = pil_to_bytes(pil_img)
+    with st.spinner("Detecting…"):
+        result, err = cached_detection(
+            img_bytes, stars,
+            gridline_threshold, gridline_coverage,
+            DEFAULT_BOLD_THRESHOLD, bold_frac, inset,
+            mode=det_mode, color_threshold=color_threshold,
+        )
+
+    if err:
+        st.error(f"Detection failed: {err}")
+    else:
+        with col_out:
+            st.subheader("Debug overlay")
+            st.image(result["debug_img"], use_container_width=True,
+                     caption="Red = detected region walls")
+            st.download_button(
+                "⬇ Download debug image",
+                data=pil_to_bytes(result["debug_img"]),
+                file_name="debug_walls.png",
+                mime="image/png",
+                use_container_width=True,
             )
 
-        if err:
-            st.error(f"Detection failed: {err}")
-        else:
-            with col_out:
-                st.subheader("Debug overlay")
-                st.image(result["debug_img"], use_container_width=True,
-                         caption="Red = detected region walls")
-                st.download_button(
-                    "⬇ Download debug image",
-                    data=pil_to_bytes(result["debug_img"]),
-                    file_name="debug_walls.png",
-                    mime="image/png",
-                    use_container_width=True,
-                )
+        for msg in result["infos"]:
+            st.info(f"ℹ️ {msg}")
+        for msg in result["warnings"]:
+            st.warning(msg)
 
-            for msg in result["infos"]:
-                st.info(f"ℹ️ {msg}")
-            for msg in result["warnings"]:
-                st.warning(msg)
+        status_parts = [
+            f"**Grid:** {result['grid']}",
+            f"**Regions:** {result['n_regions']}",
+            f"**Sizes:** {result['region_sizes']}",
+            f"**Round-trip:** {'✅ OK' if result['rt_ok'] else '❌ mismatch'}",
+        ]
+        st.info("  ·  ".join(status_parts))
 
-            status_parts = [
-                f"**Grid:** {result['grid']}",
-                f"**Regions:** {result['n_regions']}",
-                f"**Sizes:** {result['region_sizes']}",
-                f"**Round-trip:** {'✅ OK' if result['rt_ok'] else '❌ mismatch'}",
-            ]
-            st.info("  ·  ".join(status_parts))
+        puzzlink = result["puzzlink_url"]
+        penpa    = result["penpa_url"]
 
-            puzzlink = result["puzzlink_url"]
-            penpa    = result["penpa_url"]
-
-            # ── Copy puzz.link button ─────────────────────────────────────────
-            escaped = puzzlink.replace("'", "\\'")
-            components.html(f"""
+        # ── Copy puzz.link button ─────────────────────────────────────────
+        escaped = puzzlink.replace("'", "\\'")
+        components.html(f"""
 <button onclick="navigator.clipboard.writeText('{escaped}').then(()=>{{
     this.textContent='✅ Copied!';
     setTimeout(()=>this.textContent='📋 Copy puzz.link',1500);
@@ -422,34 +514,34 @@ border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;">
 📋 Copy puzz.link
 </button>""", height=48)
 
-            # ── Path 1: Looks good ────────────────────────────────────────────
-            st.subheader("✅ Borders look correct?")
-            st.markdown(
-                "Copy the puzz.link URL above, paste it into the marktekfan converter, and click **Convert**."
-            )
-            st.link_button(
-                "Open marktekfan converter →",
-                "https://marktekfan.github.io/sudokupad-penpa-import/",
-                use_container_width=True,
-            )
+        # ── Path 1: Looks good ────────────────────────────────────────────
+        st.subheader("✅ Borders look correct?")
+        st.markdown(
+            "Copy the puzz.link URL above, paste it into the marktekfan converter, and click **Convert**."
+        )
+        st.link_button(
+            "Open marktekfan converter →",
+            "https://marktekfan.github.io/sudokupad-penpa-import/",
+            use_container_width=True,
+        )
 
-            # ── Path 2: Needs fixing ──────────────────────────────────────────
-            st.divider()
-            with st.expander("🔧 Borders need fixing? — Penpa-edit correction steps"):
-                st.link_button("✏️ Open in Penpa-edit →", penpa, use_container_width=True)
-                st.markdown("""
+        # ── Path 2: Needs fixing ──────────────────────────────────────────
+        st.divider()
+        with st.expander("🔧 Borders need fixing? — Penpa-edit correction steps"):
+            st.link_button("✏️ Open in Penpa-edit →", penpa, use_container_width=True)
+            st.markdown("""
 1. Tap the **Problem** tab (top-left of the toolbar)
 2. Tap **Edge** mode → sub-mode **Normal**
 3. Tap edges to add or remove borders until the regions look right
 4. Tap **Share** in the toolbar — the address bar URL updates to a Penpa URL
 5. Copy that URL and paste it into the marktekfan converter, then click **Convert**
 """)
-                st.link_button(
-                    "Open marktekfan converter →",
-                    "https://marktekfan.github.io/sudokupad-penpa-import/",
-                    use_container_width=True,
-                )
+            st.link_button(
+                "Open marktekfan converter →",
+                "https://marktekfan.github.io/sudokupad-penpa-import/",
+                use_container_width=True,
+            )
 
-            # ── Raw URL ───────────────────────────────────────────────────────
-            with st.expander("🔗 Raw puzz.link URL"):
-                st.code(puzzlink, language=None)
+        # ── Raw URL ───────────────────────────────────────────────────────
+        with st.expander("🔗 Raw puzz.link URL"):
+            st.code(puzzlink, language=None)
