@@ -4,7 +4,6 @@ Run with: streamlit run app.py
 """
 
 import io
-import hashlib
 import urllib.request
 import numpy as np
 import streamlit as st
@@ -358,11 +357,13 @@ def run_detection(pil_img: Image.Image, stars: int,
 
 # ── Cached detection (reruns only when inputs actually change) ─────────────────
 
-@st.cache_data(show_spinner=False, hash_funcs={Image.Image: lambda img: hashlib.md5(np.array(img).tobytes()).hexdigest()})
-def cached_detection(img_key: str, pil_img: Image.Image, stars: int,
+@st.cache_data(show_spinner=False)
+def cached_detection(img_arr: np.ndarray, img_mode: str, stars: int,
                      gridline_threshold: int, gridline_coverage: float,
                      bold_threshold: int, bold_frac: float, inset: int,
                      mode: str, color_threshold: float):
+    """img_arr is a numpy array (hashable by Streamlit); PIL Image is reconstructed inside."""
+    pil_img = Image.fromarray(img_arr)
     return run_detection(pil_img, stars, gridline_threshold, gridline_coverage,
                          bold_threshold, bold_frac, inset, mode, color_threshold)
 
@@ -485,12 +486,11 @@ if pil_img is not None:
         st.subheader("Input")
         st.image(pil_img, use_container_width=True)
 
-    # Fast hash for cache key — md5 of raw pixels, no PNG encoding
-    img_arr = np.array(pil_img)
-    img_key = hashlib.md5(img_arr.tobytes()).hexdigest()
+    # Convert to RGB numpy array — Streamlit can hash numpy arrays natively
+    img_arr = np.asarray(pil_img.convert("RGB"))
     with st.spinner("Detecting…"):
         result, err = cached_detection(
-            img_key, pil_img, stars,
+            img_arr, "RGB", stars,
             gridline_threshold, gridline_coverage,
             DEFAULT_BOLD_THRESHOLD, bold_frac, inset,
             mode=det_mode, color_threshold=color_threshold,
